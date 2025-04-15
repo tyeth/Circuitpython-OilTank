@@ -21,24 +21,24 @@ from adafruit_display_text import label
 
 # Configuration from settings.toml
 ADAFRUIT_IO_URL = "https://io.adafruit.com/api/v2/"
-ADAFRUIT_USERNAME = os.getenv("aio_username")
-ADAFRUIT_KEY = os.getenv("aio_key")
-FEED_NAME = os.getenv("feed_name", "distance-sensor")
+ADAFRUIT_USERNAME = os.getenv("ADAFRUIT_IO_USERNAME")
+ADAFRUIT_KEY = os.getenv("ADAFRUIT_IO_KEY")
+FEED_NAME = os.getenv("ADAFRUIT_IO_FEED_NAME", "distance-sensor")
 
 # Time settings with defaults
-REPORT_INTERVAL = int(os.getenv("report_interval", "10800"))  # 3 hours in seconds (default)
-MIN_REPORT_INTERVAL = int(os.getenv("min_report_interval", "86400"))  # 24 hours in seconds (default)
-AWAKE_TIME = int(os.getenv("awake_time", "30"))  # seconds to stay awake after button press (default)
-MAX_STORED_READINGS = int(os.getenv("max_stored_readings", "5"))  # number of previous readings to store (default)
+REPORT_INTERVAL = int(os.getenv("DISTANCE_MONITOR_REPORT_INTERVAL", "10800"))  # 3 hours in seconds (default)
+MIN_REPORT_INTERVAL = int(os.getenv("DISTANCE_MONITOR_MIN_REPORT_INTERVAL", "86400"))  # 24 hours in seconds (default)
+AWAKE_TIME = int(os.getenv("DISTANCE_MONITOR_AWAKE_TIME", "30"))  # seconds to stay awake after button press (default)
+MAX_STORED_READINGS = int(os.getenv("DISTANCE_MONITOR_MAX_STORED_READINGS", "5"))  # number of previous readings to store (default)
 
 # Default hysteresis - can be overridden in settings.toml or by user via buttons
-DEFAULT_HYSTERESIS = float(os.getenv("default_hysteresis", "2.0"))  # 2cm change threshold (default)
-MIN_HYSTERESIS = float(os.getenv("min_hysteresis", "0.5"))  # Minimum allowed hysteresis value
-MAX_HYSTERESIS = float(os.getenv("max_hysteresis", "10.0"))  # Maximum allowed hysteresis value
+DEFAULT_HYSTERESIS = float(os.getenv("DISTANCE_MONITOR_DEFAULT_HYSTERESIS", "2.0"))  # 2cm change threshold (default)
+MIN_HYSTERESIS = float(os.getenv("DISTANCE_MONITOR_MIN_HYSTERESIS", "0.5"))  # Minimum allowed hysteresis value
+MAX_HYSTERESIS = float(os.getenv("DISTANCE_MONITOR_MAX_HYSTERESIS", "10.0"))  # Maximum allowed hysteresis value
 
 # WiFi connection parameters
-WIFI_SSID = os.getenv("ssid")
-WIFI_PASSWORD = os.getenv("password")
+WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID")
+WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD")
 
 # Setup display and backlight
 def setup_display():
