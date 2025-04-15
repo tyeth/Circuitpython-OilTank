@@ -2,3 +2,4 @@ circuitpython-stubs
 adafruit-circuitpython-vl53l0x
 adafruit-circuitpython-vl53l1x
 blinka-displayio-pygamedisplay
+adafruit-circuitpython-display-text
