@@ -95,15 +95,43 @@ def setup_display():
 
 # Setup buttons
 def setup_buttons():
-    button_pins = [board.D0, board.D1, board.D2]
+    # Define which buttons are active LOW (default) and which are active HIGH
+    button_configs = [
+        {"pin": board.D0, "active_low": True},  # D0 is active LOW (pressed = LOW)
+        {"pin": board.D1, "active_low": False}, # D1 is active HIGH (pressed = HIGH)
+        {"pin": board.D2, "active_low": False}  # D2 is active HIGH (pressed = HIGH)
+    ]
+    
     buttons = []
     
-    for pin in button_pins:
-        btn = digitalio.DigitalInOut(pin)
-        btn.direction = digitalio.Direction.INPUT
-        btn.pull = digitalio.Pull.UP
-        # Store both the DigitalInOut object and the original pin
-        buttons.append({"dio": btn, "pin": pin})
+    for config in button_configs:
+        pin = config["pin"]
+        active_low = config["active_low"]
+        
+        try:
+            btn = digitalio.DigitalInOut(pin)
+            btn.direction = digitalio.Direction.INPUT
+            
+            # Set pull direction based on active state
+            if active_low:
+                btn.pull = digitalio.Pull.UP  # Pull up for active LOW buttons
+            else:
+                btn.pull = digitalio.Pull.DOWN  # Pull down for active HIGH buttons
+                
+            # Store DigitalInOut object, pin, and active state
+            buttons.append({
+                "dio": btn, 
+                "pin": pin,
+                "active_low": active_low
+            })
+        except Exception as e:
+            print(f"Error setting up button {pin}: {e}")
+            # Create a placeholder if button setup fails
+            buttons.append({
+                "dio": None,
+                "pin": pin,
+                "active_low": active_low
+            })
     
     return buttons
 
@@ -495,45 +523,51 @@ def main():
             
             # Check buttons with error handling
             try:
-                # D0: Decrease hysteresis
-                if not buttons[0]["dio"].value:
-                    hysteresis = max(MIN_HYSTERESIS, hysteresis - 0.5)  # Respect minimum from settings
-                    print(f"Hysteresis decreased to {hysteresis}cm")
-                    # ONLY update the hysteresis display element
-                    update_hysteresis(ui_elements, hysteresis)
-                    time.sleep(0.3)  # Debounce
+                # D0: Decrease hysteresis (active LOW)
+                if buttons[0]["dio"] is not None:
+                    is_pressed = buttons[0]["active_low"] == (not buttons[0]["dio"].value)
+                    if is_pressed:
+                        hysteresis = max(MIN_HYSTERESIS, hysteresis - 0.5)  # Respect minimum from settings
+                        print(f"Hysteresis decreased to {hysteresis}cm")
+                        # ONLY update the hysteresis display element
+                        update_hysteresis(ui_elements, hysteresis)
+                        time.sleep(0.3)  # Debounce
                 
-                # D1: Increase hysteresis
-                if not buttons[1]["dio"].value:
-                    hysteresis = min(MAX_HYSTERESIS, hysteresis + 0.5)  # Respect maximum from settings
-                    print(f"Hysteresis increased to {hysteresis}cm")
-                    # ONLY update the hysteresis display element
-                    update_hysteresis(ui_elements, hysteresis)
-                    time.sleep(0.3)  # Debounce
+                # D1: Increase hysteresis (active HIGH)
+                if buttons[1]["dio"] is not None:
+                    is_pressed = buttons[1]["active_low"] == (not buttons[1]["dio"].value)
+                    if is_pressed:
+                        hysteresis = min(MAX_HYSTERESIS, hysteresis + 0.5)  # Respect maximum from settings
+                        print(f"Hysteresis increased to {hysteresis}cm")
+                        # ONLY update the hysteresis display element
+                        update_hysteresis(ui_elements, hysteresis)
+                        time.sleep(0.3)  # Debounce
                 
-                # D2: Force report
-                if not buttons[2]["dio"].value:
-                    print("Manual report requested")
-                    # Connect to WiFi if not already connected
-                    if not wifi.radio.connected:
-                        wifi_connected = connect_wifi()
-                    else:
-                        wifi_connected = True
-                    
-                    # Report to Adafruit IO if WiFi connected
-                    if wifi_connected:
-                        report_success = send_to_ADAFRUIT_AIO(current_distance)
-                        if report_success:
-                            last_report_time = time.monotonic()
-                            print("Manual report successful")
+                # D2: Force report (active HIGH)
+                if buttons[2]["dio"] is not None:
+                    is_pressed = buttons[2]["active_low"] == (not buttons[2]["dio"].value)
+                    if is_pressed:
+                        print("Manual report requested")
+                        # Connect to WiFi if not already connected
+                        if not wifi.radio.connected:
+                            wifi_connected = connect_wifi()
                         else:
-                            print("Manual report failed")
-                    else:
-                        print("Could not connect to WiFi for manual report")
+                            wifi_connected = True
+                        
+                        # Report to Adafruit IO if WiFi connected
+                        if wifi_connected:
+                            report_success = send_to_ADAFRUIT_AIO(current_distance)
+                            if report_success:
+                                last_report_time = time.monotonic()
+                                print("Manual report successful")
+                            else:
+                                print("Manual report failed")
+                        else:
+                            print("Could not connect to WiFi for manual report")
                     
-                    # Reset the countdown timer regardless of success
-                    start_time = time.monotonic()
-                    time.sleep(0.3)  # Debounce
+                        # Reset the countdown timer regardless of success
+                        start_time = time.monotonic()
+                        time.sleep(0.3)  # Debounce
             except Exception as e:
                 print(f"Error during button handling: {e}")
             
@@ -579,10 +613,28 @@ def main():
             try:
                 # Access the pin directly from the dictionary
                 button_pin = button["pin"]
-                pin_alarm = alarm.pin.PinAlarm(pin=button_pin, value=False, pull=True)
-                pin_alarms.append(pin_alarm)
+                
+                # For alarm setup, we need to make sure we're not using the pins already in use
+                # First, close the DigitalInOut to release the pin if it was successfully set up
+                if button["dio"] is not None:
+                    button["dio"].deinit()
+                
+                # Then set up the pin alarm with the appropriate trigger value
+                # For active LOW buttons, we want to trigger on LOW (False)
+                # For active HIGH buttons, we want to trigger on HIGH (True)
+                alarm_value = not button["active_low"]  # Opposite of active state
+
+                # With a brief delay to ensure pin is released
+                time.sleep(0.1)
+                
+                try:
+                    pin_alarm = alarm.pin.PinAlarm(pin=button_pin, value=alarm_value, pull=not alarm_value)
+                    pin_alarms.append(pin_alarm)
+                    print(f"Alarm set for pin {button_pin}")
+                except Exception as e:
+                    print(f"Error setting up button alarm: {e}")
             except Exception as e:
-                print(f"Error setting up button alarm: {e}")
+                print(f"Error preparing button for alarm: {e}")
         
         # Clear the display before sleep to save power
         display.root_group = displayio.Group()
