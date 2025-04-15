@@ -61,7 +61,7 @@ def setup_display():
     
     # Create a group to hold display items
     main_group = displayio.Group()
-    display.show(main_group)
+    display.root_group=main_group
     
     return display, main_group, backlight
 
@@ -361,7 +361,7 @@ def main():
         pin_alarms.append(pin_alarm)
     
     # Clear the display and turn off backlight before sleep to save power
-    display.show(displayio.Group())
+    display.root_group = displayio.Group()
     if backlight:
         backlight.value = False
     
@@ -379,7 +379,7 @@ except Exception as e:
     error_text.x = 10
     error_text.y = 120
     error_group.append(error_text)
-    display.show(error_group)
+    display.root_group = error_group
     time.sleep(10)  # Show error for 10 seconds
     # Reset the microcontroller on error
     microcontroller.reset()
