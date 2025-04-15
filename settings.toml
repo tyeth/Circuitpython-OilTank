@@ -1,0 +1,19 @@
+# WiFi Settings
+ssid = "your_wifi_ssid"
+password = "your_wifi_password"
+
+# Adafruit IO Settings
+aio_username = "your_adafruit_io_username"
+aio_key = "your_adafruit_io_key"
+feed_name = "distance-sensor"
+
+# Time Settings (in seconds)
+report_interval = 10800     # 3 hours - maximum time between reports
+min_report_interval = 86400 # 24 hours - minimum time between reports 
+awake_time = 30             # Time to stay awake after button press
+
+# Sensor Settings
+default_hysteresis = 2.0    # Default sensitivity threshold in cm
+min_hysteresis = 0.5        # Minimum sensitivity threshold in cm
+max_hysteresis = 10.0       # Maximum sensitivity threshold in cm
+max_stored_readings = 5     # Number of previous readings to store

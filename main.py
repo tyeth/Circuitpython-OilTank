@@ -16,19 +16,29 @@ import adafruit_requests
 import microcontroller
 import alarm
 import json
+import os
 from adafruit_display_text import label
-from secrets import secrets
 
-# Configuration
+# Configuration from settings.toml
 ADAFRUIT_IO_URL = "https://io.adafruit.com/api/v2/"
-ADAFRUIT_USERNAME = secrets["aio_username"]
-ADAFRUIT_KEY = secrets["aio_key"]
-FEED_NAME = "distance-sensor"
-REPORT_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
-MIN_REPORT_INTERVAL = 24 * 60 * 60  # 24 hours in seconds for mandatory reporting
-SIGNIFICANT_CHANGE = 2.0  # 2cm change threshold (default hysteresis)
-AWAKE_TIME = 30  # seconds to stay awake after button press
-MAX_STORED_READINGS = 5  # number of previous readings to store
+ADAFRUIT_USERNAME = os.getenv("aio_username")
+ADAFRUIT_KEY = os.getenv("aio_key")
+FEED_NAME = os.getenv("feed_name", "distance-sensor")
+
+# Time settings with defaults
+REPORT_INTERVAL = int(os.getenv("report_interval", "10800"))  # 3 hours in seconds (default)
+MIN_REPORT_INTERVAL = int(os.getenv("min_report_interval", "86400"))  # 24 hours in seconds (default)
+AWAKE_TIME = int(os.getenv("awake_time", "30"))  # seconds to stay awake after button press (default)
+MAX_STORED_READINGS = int(os.getenv("max_stored_readings", "5"))  # number of previous readings to store (default)
+
+# Default hysteresis - can be overridden in settings.toml or by user via buttons
+DEFAULT_HYSTERESIS = float(os.getenv("default_hysteresis", "2.0"))  # 2cm change threshold (default)
+MIN_HYSTERESIS = float(os.getenv("min_hysteresis", "0.5"))  # Minimum allowed hysteresis value
+MAX_HYSTERESIS = float(os.getenv("max_hysteresis", "10.0"))  # Maximum allowed hysteresis value
+
+# WiFi connection parameters
+WIFI_SSID = os.getenv("ssid")
+WIFI_PASSWORD = os.getenv("password")
 
 # Setup display and backlight
 def setup_display():
@@ -145,8 +155,8 @@ def create_display_interface(main_group, current_distance, past_readings, hyster
 # Function to connect to WiFi
 def connect_wifi():
     print("Connecting to WiFi...")
-    wifi.radio.connect(secrets["ssid"], secrets["password"])
-    print(f"Connected to {secrets['ssid']}!")
+    wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+    print(f"Connected to {WIFI_SSID}!")
     print(f"IP Address: {wifi.radio.ipv4_address}")
 
 # Function to send data to Adafruit IO
@@ -184,7 +194,7 @@ sensor.measurement_timing_budget = 200000  # 200ms
 last_report_time = 0
 last_distance = 0
 past_readings = []
-hysteresis = SIGNIFICANT_CHANGE  # Default hysteresis value
+hysteresis = DEFAULT_HYSTERESIS  # Default hysteresis value from settings.toml
 
 # Initialize display
 display, main_group, backlight = setup_display()
@@ -225,7 +235,7 @@ try:
         last_report_time = state["last_report_time"]
         last_distance = state["last_distance"]
         past_readings = state.get("past_readings", [])
-        hysteresis = state.get("hysteresis", SIGNIFICANT_CHANGE)
+        hysteresis = state.get("hysteresis", DEFAULT_HYSTERESIS)
         print(f"Loaded state: last report at {last_report_time}, distance: {last_distance}cm")
         print(f"Hysteresis: {hysteresis}cm")
 except (OSError, ValueError):
@@ -292,14 +302,14 @@ def main():
         # Check buttons
         # D0: Decrease hysteresis
         if not buttons[0].value:
-            hysteresis = max(0.5, hysteresis - 0.5)  # Minimum 0.5cm
+            hysteresis = max(MIN_HYSTERESIS, hysteresis - 0.5)  # Respect minimum from settings
             print(f"Hysteresis decreased to {hysteresis}cm")
             create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
             time.sleep(0.3)  # Debounce
         
         # D1: Increase hysteresis
         if not buttons[1].value:
-            hysteresis = min(10.0, hysteresis + 0.5)  # Maximum 10cm
+            hysteresis = min(MAX_HYSTERESIS, hysteresis + 0.5)  # Respect maximum from settings
             print(f"Hysteresis increased to {hysteresis}cm")
             create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
             time.sleep(0.3)  # Debounce
