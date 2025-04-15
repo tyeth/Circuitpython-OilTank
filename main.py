@@ -219,7 +219,11 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
         text=f"Hysteresis: {hysteresis:.1f}cm", 
         scale=info_scale
     )
-    hysteresis_text.x = x_margin
+    hysteresis_width = len(hysteresis_text.text) * 6 * info_scale
+    print(f"Hysteresis width: {hysteresis_width}")
+    right_x_margin = display_width - hysteresis_width - x_margin
+    print(f"Right margin: {right_x_margin}")
+    hysteresis_text.x = right_x_margin
     hysteresis_text.y = hysteresis_y # settings_y
     main_group.append(hysteresis_text)
     ui_elements.hysteresis_label = hysteresis_text
@@ -231,8 +235,7 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
         scale=info_scale
     )
     # Position on right side
-    countdown_width = len(countdown_text.text) * 6 * info_scale
-    countdown_text.x = display_width - countdown_width - x_margin
+    countdown_text.x = right_x_margin
     countdown_text.y = settings_y
     main_group.append(countdown_text)
     ui_elements.countdown_label = countdown_text
@@ -362,11 +365,27 @@ def send_to_ADAFRUIT_AIO(distance):
 # Initialize the I2C bus
 i2c = busio.I2C(board.SCL, board.SDA)
 
-# Initialize the VL53L0X sensor
-sensor = adafruit_vl53l0x.VL53L0X(i2c)
+sensor = None
+sensor_out_of_range = 4000  # Default out of range value for VL53L0X
+try:
+    # Initialize the VL53L0X sensor
+    sensor = adafruit_vl53l0x.VL53L0X(i2c)
 
-# For better accuracy, you can set timing budget
-sensor.measurement_timing_budget = 200000  # 200ms
+    # For better accuracy, you can set timing budget
+    sensor.measurement_timing_budget = 200000  # 200ms
+except Exception as e:
+    pass
+if sensor is None:
+    print("ERROR: VL53L0X sensor not found!")
+    # Try to use VL53L1X if available
+    try:
+        import adafruit_vl53l1x
+        sensor = adafruit_vl53l1x.VL53L1X(i2c)
+        sensor.measurement_timing_budget = 200000  # 200ms
+        sensor_out_of_range = 8000  # Default out of range value for VL53L1X
+    except Exception as e:
+        print(f"Unexpected error initializing sensor: {e}")
+        raise
 
 # Global variables to track time and last readings
 last_report_time = 0
@@ -394,7 +413,7 @@ def read_distance():
                 reading = sensor.range / 10  
                 
                 # Check for valid readings (some sensors might return 0 or very large values on error)
-                if 0 < reading < 8000:  # Reasonable range check for VL53L0X/VL53L1X (0-8m)
+                if 0 < reading < sensor_out_of_range:  # Reasonable range check for VL53L0X/VL53L1X (0-8m)
                     total_distance += reading
                     valid_readings += 1
                 else:
@@ -416,12 +435,7 @@ def read_distance():
 
 # Check if waking from deep sleep
 wake_reason = None
-if supervisor.runtime.run_reason is supervisor.RunReason.STARTUP:
-    print("First boot, initializing...")
-    last_report_time = 0
-    last_distance = 0
-    past_readings = []
-elif isinstance(alarm.wake_alarm, alarm.pin.PinAlarm):
+if isinstance(alarm.wake_alarm, alarm.pin.PinAlarm):
     print("Woke from button press!")
     wake_reason = "button"
     # Turn on backlight if we have control over it
@@ -430,6 +444,12 @@ elif isinstance(alarm.wake_alarm, alarm.pin.PinAlarm):
 elif alarm.wake_alarm:
     print("Woke from time alarm!")
     wake_reason = "timer"
+elif supervisor.runtime.run_reason is supervisor.RunReason.STARTUP:
+    print("First boot, initializing...")
+    last_report_time = 0
+    last_distance = 0
+    past_readings = []
+time.sleep(2) # debug
     
 # Try to load previous state from a file
 try:
@@ -608,11 +628,11 @@ def main():
     # Set up alarms with error handling
     try:
         # Set up time alarm
-        time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + time_until_next_check)
+        time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + 15)# + time_until_next_check)
         
         # Set up pin alarms for D0, D1, and D2
-        pin_alarms = []
-        for button in buttons:
+        pin_alarms = []  # Start with time alarm
+        for button in buttons[1:]:
             try:
                 # Access the pin directly from the dictionary
                 button_pin = button["pin"]
@@ -631,7 +651,8 @@ def main():
                 time.sleep(0.1)
                 
                 try:
-                    pin_alarm = alarm.pin.PinAlarm(pin=button_pin, value=alarm_value, pull=not alarm_value)
+                    print(f"Setting up alarm for {button}")
+                    pin_alarm = alarm.pin.PinAlarm(pin=button['pin'], value=not alarm_value)
                     pin_alarms.append(pin_alarm)
                     print(f"Alarm set for pin {button_pin}")
                 except Exception as e:
@@ -648,6 +669,7 @@ def main():
         if pin_alarms:
             alarm.exit_and_deep_sleep_until_alarms(time_alarm, *pin_alarms)
         else:
+            print("No pin alarms set, using time alarm only")
             alarm.exit_and_deep_sleep_until_alarms(time_alarm)
     except Exception as e:
         print(f"Error entering deep sleep: {e}")
