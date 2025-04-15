@@ -21,10 +21,18 @@ import os
 from adafruit_display_text import label, scrolling_label
 
 # Configuration from settings.toml
-ADAFRUIT_IO_URL = "https://io.adafruit.com/api/v2/"
-ADAFRUIT_USERNAME = os.getenv("ADAFRUIT_IO_USERNAME")
-ADAFRUIT_KEY = os.getenv("ADAFRUIT_IO_KEY")
-FEED_NAME = os.getenv("ADAFRUIT_IO_FEED_NAME", "distance-sensor")
+ADAFRUIT_AIO_URL = "https://io.adafruit.com/api/v2/"
+
+# Check for required credentials with fallbacks
+ADAFRUIT_USERNAME = os.getenv("ADAFRUIT_AIO_USERNAME", "")
+if not ADAFRUIT_USERNAME:
+    print("WARNING: ADAFRUIT_AIO_USERNAME not set in settings.toml")
+
+ADAFRUIT_KEY = os.getenv("ADAFRUIT_AIO_KEY", "")
+if not ADAFRUIT_KEY:
+    print("WARNING: ADAFRUIT_AIO_KEY not set in settings.toml")
+
+FEED_NAME = os.getenv("ADAFRUIT_AIO_FEED_NAME", "distance-sensor")
 
 # Time settings with defaults
 REPORT_INTERVAL = int(os.getenv("DISTANCE_MONITOR_REPORT_INTERVAL", "10800"))  # 3 hours in seconds (default)
@@ -37,9 +45,14 @@ DEFAULT_HYSTERESIS = float(os.getenv("DISTANCE_MONITOR_DEFAULT_HYSTERESIS", "2.0
 MIN_HYSTERESIS = float(os.getenv("DISTANCE_MONITOR_MIN_HYSTERESIS", "0.5"))  # Minimum allowed hysteresis value
 MAX_HYSTERESIS = float(os.getenv("DISTANCE_MONITOR_MAX_HYSTERESIS", "10.0"))  # Maximum allowed hysteresis value
 
-# WiFi connection parameters
-WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID")
-WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD")
+# WiFi connection parameters with warnings for missing credentials
+WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID", "")
+if not WIFI_SSID:
+    print("WARNING: CIRCUITPY_WIFI_SSID not set in settings.toml")
+
+WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD", "")
+if not WIFI_PASSWORD:
+    print("WARNING: CIRCUITPY_WIFI_PASSWORD not set in settings.toml")
 
 # Setup display and backlight
 def setup_display():
@@ -81,7 +94,8 @@ def setup_buttons():
         btn = digitalio.DigitalInOut(pin)
         btn.direction = digitalio.Direction.INPUT
         btn.pull = digitalio.Pull.UP
-        buttons.append(btn)
+        # Store both the DigitalInOut object and the original pin
+        buttons.append({"dio": btn, "pin": pin})
     
     return buttons
 
@@ -218,11 +232,33 @@ def connect_wifi():
             
         # Try to connect with timeout
         try:
-            wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD, timeout=10)
-            print(f"Connected to {WIFI_SSID}!")
-            print(f"IP Address: {wifi.radio.ipv4_address}")
-            return True
-        except (ValueError, RuntimeError) as e:
+            # Make sure wifi is enabled
+            wifi.radio.enabled = True
+            time.sleep(1)  # Brief delay to allow radio to initialize
+            
+            # Check if we're in CircuitPython safe mode, which disables networking
+            # Not all versions of CircuitPython expose this property
+            try:
+                if hasattr(supervisor.runtime, 'safe_mode') and supervisor.runtime.safe_mode:
+                    print("WARNING: Running in safe mode, WiFi disabled")
+                    return False
+            except Exception:
+                # If we can't check safe mode, just continue
+                pass
+                
+            # Try connecting with timeout
+            try:
+                wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD, timeout=10)
+                print(f"Connected to {WIFI_SSID}!")
+                print(f"IP Address: {wifi.radio.ipv4_address}")
+                return True
+            except ConnectionError as e:
+                print(f"WiFi connection error: {e}")
+                return False
+            except TimeoutError:
+                print("WiFi connection timeout")
+                return False
+        except (ValueError, RuntimeError, OSError) as e:
             print(f"WiFi connection error: {e}")
             return False
     except Exception as e:
@@ -230,7 +266,7 @@ def connect_wifi():
         return False
 
 # Function to send data to Adafruit IO with robust error handling
-def send_to_adafruit_io(distance):
+def send_to_ADAFRUIT_AIO(distance):
     try:
         # Check if we have required credentials
         if not ADAFRUIT_USERNAME or not ADAFRUIT_KEY:
@@ -242,7 +278,7 @@ def send_to_adafruit_io(distance):
         requests = adafruit_requests.Session(pool, ssl.create_default_context())
         
         # Construct URL and headers
-        url = f"{ADAFRUIT_IO_URL}feeds/{FEED_NAME}/data"
+        url = f"{ADAFRUIT_AIO_URL}feeds/{FEED_NAME}/data"
         headers = {
             "X-AIO-Key": ADAFRUIT_KEY,
             "Content-Type": "application/json"
@@ -383,7 +419,7 @@ def main():
         connect_wifi()
         
         # Report to Adafruit IO
-        send_to_adafruit_io(current_distance)
+        send_to_ADAFRUIT_AIO(current_distance)
         
         # Update last reported values
         last_report_time = current_time
@@ -407,28 +443,28 @@ def main():
         
         # Check buttons
         # D0: Decrease hysteresis
-        if not buttons[0].value:
+        if not buttons[0]["dio"].value:
             hysteresis = max(MIN_HYSTERESIS, hysteresis - 0.5)  # Respect minimum from settings
             print(f"Hysteresis decreased to {hysteresis}cm")
             create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
             time.sleep(0.3)  # Debounce
         
         # D1: Increase hysteresis
-        if not buttons[1].value:
+        if not buttons[1]["dio"].value:
             hysteresis = min(MAX_HYSTERESIS, hysteresis + 0.5)  # Respect maximum from settings
             print(f"Hysteresis increased to {hysteresis}cm")
             create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
             time.sleep(0.3)  # Debounce
         
         # D2: Force report
-        if not buttons[2].value:
+        if not buttons[2]["dio"].value:
             print("Manual report requested")
             # Connect to WiFi if not already connected
             if not wifi.radio.connected:
                 connect_wifi()
             
             # Report to Adafruit IO
-            send_to_adafruit_io(current_distance)
+            send_to_ADAFRUIT_AIO(current_distance)
             last_report_time = time.monotonic()
             
             # Reset the countdown timer
@@ -463,6 +499,7 @@ def main():
     # Set up pin alarms for D0, D1, and D2
     pin_alarms = []
     for button in buttons:
+        print(f"Button obj: {button}")
         pin_alarm = alarm.pin.PinAlarm(pin=button.pin, value=False, pull=True)
         pin_alarms.append(pin_alarm)
     
