@@ -156,7 +156,7 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
     # Calculate margins and spacing based on display size
     x_margin = int(display_width * 0.05)  # 5% margin
     y_start = int(display_height * 0.1)   # Start 10% from top
-    y_spacing = int(display_height * 0.08)  # Spacing is 8% of height
+    y_spacing = int(display_height * 0.13)  # Spacing is 16% of height
     
     # Set up text area for title - this never changes
     title_text = label.Label(terminalio.FONT, text="Distance Monitor", scale=title_scale)
@@ -178,6 +178,7 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
     
     # Past readings section header - this never changes
     history_y = current_y + y_spacing
+    hysteresis_y = history_y
     history_title = label.Label(terminalio.FONT, text="Past Readings:", scale=info_scale)
     history_title.x = x_margin
     history_title.y = history_y
@@ -219,7 +220,7 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
         scale=info_scale
     )
     hysteresis_text.x = x_margin
-    hysteresis_text.y = settings_y
+    hysteresis_text.y = hysteresis_y # settings_y
     main_group.append(hysteresis_text)
     ui_elements.hysteresis_label = hysteresis_text
     
@@ -488,6 +489,8 @@ def main():
     # Report data if needed
     report_success = False
     if should_report:
+        # TODO: fetch fresh reading
+
         # Connect to WiFi with error handling
         wifi_connected = connect_wifi()
         
