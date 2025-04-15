@@ -220,9 +220,7 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
         scale=info_scale
     )
     hysteresis_width = len(hysteresis_text.text) * 6 * info_scale
-    print(f"Hysteresis width: {hysteresis_width}")
     right_x_margin = display_width - hysteresis_width - x_margin
-    print(f"Right margin: {right_x_margin}")
     hysteresis_text.x = right_x_margin
     hysteresis_text.y = hysteresis_y # settings_y
     main_group.append(hysteresis_text)
@@ -339,7 +337,7 @@ def send_to_ADAFRUIT_AIO(distance):
         requests = adafruit_requests.Session(pool, ssl.create_default_context())
         
         # Construct URL and headers
-        url = f"{ADAFRUIT_AIO_URL}feeds/{FEED_NAME}/data"
+        url = f"{ADAFRUIT_AIO_URL}{ADAFRUIT_USERNAME}/feeds/{FEED_NAME}/data"
         headers = {
             "X-AIO-Key": ADAFRUIT_KEY,
             "Content-Type": "application/json"
@@ -350,10 +348,32 @@ def send_to_ADAFRUIT_AIO(distance):
         
         # Send the data with timeout handling
         print(f"Posting distance: {distance}cm to Adafruit IO...")
+        print(f"URL: {url}")
         try:
             response = requests.post(url, headers=headers, json=data, timeout=15)
             print(f"Response: {response.status_code}")
             response.close()
+            if response.status_code == 404:
+                print(f"Feed not found! Attempting to create feed ({FEED_NAME}) and retry...")
+                # Attempt to create the feed
+                create_feed_url = f"{ADAFRUIT_AIO_URL}{ADAFRUIT_USERNAME}/feeds"
+                create_feed_data = {
+                    "name": FEED_NAME,
+                    "key": FEED_NAME,
+                    "description": "Distance sensor feed",
+                    "visibility": "public"
+                }
+                create_response = requests.post(create_feed_url, headers=headers, json=create_feed_data, timeout=15)
+                print(f"Response to create feed: {create_response.status_code}: {create_response.content}")
+                create_response.close()
+                if create_response.status_code == 201:
+                    print("Feed created successfully! Retrying data post...")
+                    response = requests.post(url, headers=headers, json=data, timeout=15)
+                    print(f"Retry response: {response.status_code}")
+                    response.close()
+                else:
+                    print(f"Failed to create feed")
+                    return False
             return response.status_code == 200
         except Exception as e:
             print(f"Failed to post to Adafruit IO: {e}")
@@ -366,7 +386,7 @@ def send_to_ADAFRUIT_AIO(distance):
 i2c = busio.I2C(board.SCL, board.SDA)
 
 sensor = None
-sensor_out_of_range = 4000  # Default out of range value for VL53L0X
+sensor_out_of_range = 400  # Default out of range value for VL53L0X
 try:
     # Initialize the VL53L0X sensor
     sensor = adafruit_vl53l0x.VL53L0X(i2c)
@@ -382,7 +402,7 @@ if sensor is None:
         import adafruit_vl53l1x
         sensor = adafruit_vl53l1x.VL53L1X(i2c)
         sensor.measurement_timing_budget = 200000  # 200ms
-        sensor_out_of_range = 8000  # Default out of range value for VL53L1X
+        sensor_out_of_range = 800  # Default out of range value for VL53L1X
     except Exception as e:
         print(f"Unexpected error initializing sensor: {e}")
         raise
