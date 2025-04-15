@@ -1,5 +1,5 @@
 # Low Power Distance Monitor with Adafruit IO
-# For CircuitPython on ESP32-S2 Reverse TFT Feather with VL53L0X/VL53L1X sensor
+# For CircuitPython 9 on ESP32-S2 Reverse TFT Feather with VL53L0X/VL53L1X sensor
 
 import time
 import board
@@ -16,9 +16,7 @@ import adafruit_requests
 import microcontroller
 import alarm
 import json
-import adafruit_ili9341
 from adafruit_display_text import label
-from adafruit_button import Button
 from secrets import secrets
 
 # Configuration
@@ -32,20 +30,24 @@ SIGNIFICANT_CHANGE = 2.0  # 2cm change threshold (default hysteresis)
 AWAKE_TIME = 30  # seconds to stay awake after button press
 MAX_STORED_READINGS = 5  # number of previous readings to store
 
-# Initialize the display
-def init_display():
-    displayio.release_displays()
-    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
-    tft_cs = board.D9
-    tft_dc = board.D10
+# Setup display and backlight
+def setup_display():
+    # The display is already initialized and available as board.DISPLAY
+    display = board.DISPLAY
     
-    display_bus = displayio.FourWire(spi, command=tft_dc, chip_select=tft_cs)
-    display = adafruit_ili9341.ILI9341(display_bus, width=320, height=240)
-    
-    # Setup backlight
-    backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
-    backlight.direction = digitalio.Direction.OUTPUT
-    backlight.value = True  # Turn on the backlight
+    # Setup backlight control
+    try:
+        # First try the dedicated TFT_BACKLIGHT pin if available
+        if hasattr(board, 'TFT_BACKLIGHT'):
+            backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
+            backlight.direction = digitalio.Direction.OUTPUT
+            backlight.value = True  # Turn on the backlight
+        else:
+            # If no dedicated backlight pin, we don't control the backlight
+            backlight = None
+    except Exception as e:
+        print(f"Backlight setup error: {e}")
+        backlight = None
     
     # Create a group to hold display items
     main_group = displayio.Group()
@@ -185,7 +187,7 @@ past_readings = []
 hysteresis = SIGNIFICANT_CHANGE  # Default hysteresis value
 
 # Initialize display
-display, main_group, backlight = init_display()
+display, main_group, backlight = setup_display()
 
 # Initialize buttons
 buttons = setup_buttons()
@@ -350,7 +352,8 @@ def main():
     
     # Clear the display and turn off backlight before sleep to save power
     display.show(displayio.Group())
-    backlight.value = False
+    if backlight:
+        backlight.value = False
     
     # Go to deep sleep, wake on any of the alarms
     alarm.exit_and_deep_sleep_until_alarms(time_alarm, *pin_alarms)
