@@ -1,11 +1,13 @@
 # Low Power Distance Monitor with Adafruit IO
-# For CircuitPython on ESP32-S2/S3 with VL53L0X/VL53L1X sensor
+# For CircuitPython on ESP32-S2 Reverse TFT Feather with VL53L0X/VL53L1X sensor
 
 import time
 import board
 import busio
+import digitalio
+import displayio
+import terminalio
 import adafruit_vl53l0x
-import rtc
 import supervisor
 import wifi
 import socketpool
@@ -14,6 +16,9 @@ import adafruit_requests
 import microcontroller
 import alarm
 import json
+import adafruit_ili9341
+from adafruit_display_text import label
+from adafruit_button import Button
 from secrets import secrets
 
 # Configuration
@@ -23,7 +28,117 @@ ADAFRUIT_KEY = secrets["aio_key"]
 FEED_NAME = "distance-sensor"
 REPORT_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
 MIN_REPORT_INTERVAL = 24 * 60 * 60  # 24 hours in seconds for mandatory reporting
-SIGNIFICANT_CHANGE = 2.0  # 2cm change threshold
+SIGNIFICANT_CHANGE = 2.0  # 2cm change threshold (default hysteresis)
+AWAKE_TIME = 30  # seconds to stay awake after button press
+MAX_STORED_READINGS = 5  # number of previous readings to store
+
+# Initialize the display
+def init_display():
+    displayio.release_displays()
+    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+    tft_cs = board.D9
+    tft_dc = board.D10
+    
+    display_bus = displayio.FourWire(spi, command=tft_dc, chip_select=tft_cs)
+    display = adafruit_ili9341.ILI9341(display_bus, width=320, height=240)
+    
+    # Setup backlight
+    backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
+    backlight.direction = digitalio.Direction.OUTPUT
+    backlight.value = True  # Turn on the backlight
+    
+    # Create a group to hold display items
+    main_group = displayio.Group()
+    display.show(main_group)
+    
+    return display, main_group, backlight
+
+# Setup buttons
+def setup_buttons():
+    button_pins = [board.D0, board.D1, board.D2]
+    buttons = []
+    
+    for pin in button_pins:
+        btn = digitalio.DigitalInOut(pin)
+        btn.direction = digitalio.Direction.INPUT
+        btn.pull = digitalio.Pull.UP
+        buttons.append(btn)
+    
+    return buttons
+
+# Function to create the display interface
+def create_display_interface(main_group, current_distance, past_readings, hysteresis, countdown=None):
+    # Clear the display
+    while len(main_group) > 0:
+        main_group.pop()
+    
+    # Set up text area for title
+    title_text = label.Label(terminalio.FONT, text="Distance Monitor", scale=2)
+    title_text.x = 70
+    title_text.y = 20
+    main_group.append(title_text)
+    
+    # Current reading
+    current_text = label.Label(
+        terminalio.FONT, 
+        text=f"Current: {current_distance:.1f} cm", 
+        scale=2
+    )
+    current_text.x = 20
+    current_text.y = 50
+    main_group.append(current_text)
+    
+    # Past readings
+    history_title = label.Label(terminalio.FONT, text="Past Readings:", scale=1)
+    history_title.x = 20
+    history_title.y = 80
+    main_group.append(history_title)
+    
+    y_pos = 100
+    for i, reading in enumerate(past_readings):
+        history_text = label.Label(
+            terminalio.FONT, 
+            text=f"{i+1}: {reading:.1f} cm", 
+            scale=1
+        )
+        history_text.x = 30
+        history_text.y = y_pos
+        main_group.append(history_text)
+        y_pos += 20
+    
+    # Hysteresis setting
+    hysteresis_text = label.Label(
+        terminalio.FONT, 
+        text=f"Hysteresis: {hysteresis:.1f} cm", 
+        scale=1
+    )
+    hysteresis_text.x = 20
+    hysteresis_text.y = 190
+    main_group.append(hysteresis_text)
+    
+    # Button labels
+    button_labels = [
+        label.Label(terminalio.FONT, text="D0: Hyst-", scale=1),
+        label.Label(terminalio.FONT, text="D1: Hyst+", scale=1),
+        label.Label(terminalio.FONT, text="D2: Report", scale=1)
+    ]
+    
+    y_pos = 210
+    for i, btn_label in enumerate(button_labels):
+        btn_label.x = 20 + (i * 100)
+        btn_label.y = y_pos
+        main_group.append(btn_label)
+    
+    # Countdown timer if provided
+    if countdown is not None:
+        countdown_text = label.Label(
+            terminalio.FONT, 
+            text=f"Sleep in: {countdown}s", 
+            scale=1
+        )
+        countdown_text.x = 230
+        countdown_text.y = 190
+        main_group.append(countdown_text)
 
 # Function to connect to WiFi
 def connect_wifi():
@@ -63,37 +178,21 @@ sensor = adafruit_vl53l0x.VL53L0X(i2c)
 # For better accuracy, you can set timing budget
 sensor.measurement_timing_budget = 200000  # 200ms
 
-# Global variables to track time and last reading
+# Global variables to track time and last readings
 last_report_time = 0
 last_distance = 0
+past_readings = []
+hysteresis = SIGNIFICANT_CHANGE  # Default hysteresis value
 
-# Check if waking from deep sleep
-if supervisor.runtime.run_reason is supervisor.RunReason.STARTUP:
-    print("First boot, initializing...")
-    last_report_time = 0
-    last_distance = 0
-elif alarm.wake_alarm:
-    print("Woke from alarm!")
-    
-    # Try to load previous state from a file
-    try:
-        with open("state.json", "r") as f:
-            state = json.load(f)
-            last_report_time = state["last_report_time"]
-            last_distance = state["last_distance"]
-            print(f"Loaded state: last report at {last_report_time}, distance: {last_distance}cm")
-    except (OSError, ValueError):
-        print("No valid state file found, starting fresh")
-        last_report_time = 0
-        last_distance = 0
+# Initialize display
+display, main_group, backlight = init_display()
 
-# Main loop
-def main():
-    global last_report_time, last_distance
-    
-    current_time = time.monotonic()
-    
-    # Measure distance a few times and average for reliability
+# Initialize buttons
+buttons = setup_buttons()
+
+# Function to read the current distance
+def read_distance():
+    # Measure distance multiple times and average for reliability
     total_distance = 0
     samples = 5
     
@@ -101,8 +200,51 @@ def main():
         total_distance += sensor.range / 10  # Convert from mm to cm
         time.sleep(0.1)
     
-    current_distance = total_distance / samples
+    return total_distance / samples
+
+# Check if waking from deep sleep
+wake_reason = None
+if supervisor.runtime.run_reason is supervisor.RunReason.STARTUP:
+    print("First boot, initializing...")
+    last_report_time = 0
+    last_distance = 0
+    past_readings = []
+elif isinstance(alarm.wake_alarm, alarm.pin.PinAlarm):
+    print("Woke from button press!")
+    wake_reason = "button"
+elif alarm.wake_alarm:
+    print("Woke from time alarm!")
+    wake_reason = "timer"
+    
+# Try to load previous state from a file
+try:
+    with open("state.json", "r") as f:
+        state = json.load(f)
+        last_report_time = state["last_report_time"]
+        last_distance = state["last_distance"]
+        past_readings = state.get("past_readings", [])
+        hysteresis = state.get("hysteresis", SIGNIFICANT_CHANGE)
+        print(f"Loaded state: last report at {last_report_time}, distance: {last_distance}cm")
+        print(f"Hysteresis: {hysteresis}cm")
+except (OSError, ValueError):
+    print("No valid state file found, starting fresh")
+    last_report_time = 0
+    last_distance = 0
+    past_readings = []
+
+# Main loop
+def main():
+    global last_report_time, last_distance, past_readings, hysteresis
+    
+    current_time = time.monotonic()
+    current_distance = read_distance()
     print(f"Current distance: {current_distance:.1f}cm")
+    
+    # Update past readings
+    if last_distance != 0:  # Don't add the initial reading if it's just starting up
+        past_readings.insert(0, last_distance)
+        # Keep only the last MAX_STORED_READINGS
+        past_readings = past_readings[:MAX_STORED_READINGS]
     
     # Determine if we need to report based on criteria
     time_since_last_report = current_time - last_report_time
@@ -111,8 +253,12 @@ def main():
     should_report = (
         (time_since_last_report >= REPORT_INTERVAL) or  # Report every 3 hours
         (time_since_last_report >= MIN_REPORT_INTERVAL) or  # Report at least daily
-        (distance_change >= SIGNIFICANT_CHANGE)  # Report on significant change
+        (distance_change >= hysteresis) or  # Report on significant change
+        (wake_reason == "button")  # Report if woken by button
     )
+    
+    # Show the current readings on display
+    create_display_interface(main_group, current_distance, past_readings, hysteresis)
     
     if should_report:
         # Connect to WiFi
@@ -123,21 +269,68 @@ def main():
         
         # Update last reported values
         last_report_time = current_time
-        last_distance = current_distance
-        
-        # Save state to a file
-        try:
-            with open("state.json", "w") as f:
-                json.dump({
-                    "last_report_time": last_report_time,
-                    "last_distance": last_distance
-                }, f)
-            print("State saved")
-        except OSError as e:
-            print(f"Error saving state: {e}")
         
         # Disconnect WiFi to save power
         wifi.radio.enabled = False
+    
+    # Update the last distance
+    last_distance = current_distance
+    
+    # Handle button interaction and display for AWAKE_TIME seconds
+    start_time = time.monotonic()
+    stay_awake = True
+    
+    while stay_awake and (time.monotonic() - start_time < AWAKE_TIME):
+        # Calculate remaining time
+        remaining_time = int(AWAKE_TIME - (time.monotonic() - start_time))
+        
+        # Update display with countdown
+        create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
+        
+        # Check buttons
+        # D0: Decrease hysteresis
+        if not buttons[0].value:
+            hysteresis = max(0.5, hysteresis - 0.5)  # Minimum 0.5cm
+            print(f"Hysteresis decreased to {hysteresis}cm")
+            create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
+            time.sleep(0.3)  # Debounce
+        
+        # D1: Increase hysteresis
+        if not buttons[1].value:
+            hysteresis = min(10.0, hysteresis + 0.5)  # Maximum 10cm
+            print(f"Hysteresis increased to {hysteresis}cm")
+            create_display_interface(main_group, current_distance, past_readings, hysteresis, remaining_time)
+            time.sleep(0.3)  # Debounce
+        
+        # D2: Force report
+        if not buttons[2].value:
+            print("Manual report requested")
+            # Connect to WiFi if not already connected
+            if not wifi.radio.connected:
+                connect_wifi()
+            
+            # Report to Adafruit IO
+            send_to_adafruit_io(current_distance)
+            last_report_time = time.monotonic()
+            
+            # Reset the countdown timer
+            start_time = time.monotonic()
+            time.sleep(0.3)  # Debounce
+        
+        time.sleep(0.1)
+        
+    # Save state to a file
+    try:
+        with open("state.json", "w") as f:
+            json.dump({
+                "last_report_time": last_report_time,
+                "last_distance": last_distance,
+                "past_readings": past_readings,
+                "hysteresis": hysteresis
+            }, f)
+        print("State saved")
+    except OSError as e:
+        print(f"Error saving state: {e}")
     
     # Calculate time until next wake
     time_until_next_check = min(REPORT_INTERVAL, MIN_REPORT_INTERVAL - time_since_last_report)
@@ -149,13 +342,31 @@ def main():
     # Set up time alarm
     time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + time_until_next_check)
     
-    # Go to deep sleep
-    alarm.exit_and_deep_sleep_until_alarms(time_alarm)
+    # Set up pin alarms for D0, D1, and D2
+    pin_alarms = []
+    for button in buttons:
+        pin_alarm = alarm.pin.PinAlarm(pin=button.pin, value=False, pull=True)
+        pin_alarms.append(pin_alarm)
+    
+    # Clear the display and turn off backlight before sleep to save power
+    display.show(displayio.Group())
+    backlight.value = False
+    
+    # Go to deep sleep, wake on any of the alarms
+    alarm.exit_and_deep_sleep_until_alarms(time_alarm, *pin_alarms)
 
 # Run the main program
 try:
     main()
 except Exception as e:
     print(f"Error occurred: {e}")
+    # Display error on screen
+    error_group = displayio.Group()
+    error_text = label.Label(terminalio.FONT, text=f"ERROR: {str(e)}", scale=1)
+    error_text.x = 10
+    error_text.y = 120
+    error_group.append(error_text)
+    display.show(error_group)
+    time.sleep(10)  # Show error for 10 seconds
     # Reset the microcontroller on error
     microcontroller.reset()
