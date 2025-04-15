@@ -17,7 +17,8 @@ import microcontroller
 import alarm
 import json
 import os
-from adafruit_display_text import label
+# Import ScrollingLabel for better text display
+from adafruit_display_text import label, scrolling_label
 
 # Configuration from settings.toml
 ADAFRUIT_IO_URL = "https://io.adafruit.com/api/v2/"
@@ -45,23 +46,29 @@ def setup_display():
     # The display is already initialized and available as board.DISPLAY
     display = board.DISPLAY
     
-    # Setup backlight control
+    # Setup backlight control with proper error handling
+    backlight = None
     try:
         # First try the dedicated TFT_BACKLIGHT pin if available
         if hasattr(board, 'TFT_BACKLIGHT'):
-            backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
-            backlight.direction = digitalio.Direction.OUTPUT
-            backlight.value = True  # Turn on the backlight
-        else:
-            # If no dedicated backlight pin, we don't control the backlight
-            backlight = None
+            # Check if the pin is already in use
+            try:
+                backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
+                backlight.direction = digitalio.Direction.OUTPUT
+                backlight.value = True  # Turn on the backlight
+            except ValueError as e:
+                print(f"Backlight setup error: {e}")
+                # Pin is in use, don't try to control it
+                backlight = None
     except Exception as e:
         print(f"Backlight setup error: {e}")
         backlight = None
     
     # Create a group to hold display items
     main_group = displayio.Group()
-    display.root_group=main_group
+    
+    # Use root_group assignment instead of show() in CircuitPython 9
+    display.root_group = main_group
     
     return display, main_group, backlight
 
@@ -78,108 +85,185 @@ def setup_buttons():
     
     return buttons
 
-# Function to create the display interface
+# Function to create the display interface with adaptive text sizing
 def create_display_interface(main_group, current_distance, past_readings, hysteresis, countdown=None):
     # Clear the display
     while len(main_group) > 0:
         main_group.pop()
     
+    # Get screen dimensions
+    display_width = board.DISPLAY.width if hasattr(board.DISPLAY, 'width') else 320
+    display_height = board.DISPLAY.height if hasattr(board.DISPLAY, 'height') else 240
+    
+    # Adjust text scale based on screen size
+    title_scale = 2 if display_width >= 240 else 1
+    reading_scale = 2 if display_width >= 240 else 1
+    info_scale = 1
+    
+    # Calculate margins and spacing based on display size
+    x_margin = int(display_width * 0.05)  # 5% margin
+    y_start = int(display_height * 0.1)   # Start 10% from top
+    y_spacing = int(display_height * 0.08)  # Spacing is 8% of height
+    
     # Set up text area for title
-    title_text = label.Label(terminalio.FONT, text="Distance Monitor", scale=2)
-    title_text.x = 70
-    title_text.y = 20
+    title_text = label.Label(terminalio.FONT, text="Distance Monitor", scale=title_scale)
+    title_text.x = x_margin
+    title_text.y = y_start
     main_group.append(title_text)
     
     # Current reading
+    current_y = y_start + y_spacing
     current_text = label.Label(
         terminalio.FONT, 
         text=f"Current: {current_distance:.1f} cm", 
-        scale=2
+        scale=reading_scale
     )
-    current_text.x = 20
-    current_text.y = 50
+    current_text.x = x_margin
+    current_text.y = current_y
     main_group.append(current_text)
     
-    # Past readings
-    history_title = label.Label(terminalio.FONT, text="Past Readings:", scale=1)
-    history_title.x = 20
-    history_title.y = 80
+    # Past readings with scrolling if needed
+    history_y = current_y + y_spacing
+    history_title = label.Label(terminalio.FONT, text="Past Readings:", scale=info_scale)
+    history_title.x = x_margin
+    history_title.y = history_y
     main_group.append(history_title)
     
-    y_pos = 100
+    # Use scrolling labels for past readings if they're too long
+    max_width = display_width - (2 * x_margin)
+    
+    history_y += int(y_spacing * 0.8)
     for i, reading in enumerate(past_readings):
-        history_text = label.Label(
-            terminalio.FONT, 
-            text=f"{i+1}: {reading:.1f} cm", 
-            scale=1
-        )
-        history_text.x = 30
-        history_text.y = y_pos
-        main_group.append(history_text)
-        y_pos += 20
+        reading_text = f"{i+1}: {reading:.1f} cm"
+        # Check if the text would be too wide
+        text_width = len(reading_text) * 6 * info_scale  # Approximate width
+        
+        if text_width > max_width:
+            # Use scrolling label for wide text
+            history_text = scrolling_label.ScrollingLabel(
+                terminalio.FONT,
+                text=reading_text,
+                max_characters=int(max_width / (6 * info_scale)),
+                animate_time=0.3,
+                scale=info_scale
+            )
+        else:
+            # Use regular label for text that fits
+            history_text = label.Label(
+                terminalio.FONT, 
+                text=reading_text, 
+                scale=info_scale
+            )
+        
+        history_text.x = x_margin + 10
+        history_text.y = history_y + (i * int(y_spacing * 0.6))
+        
+        # Don't add more items than will fit on screen
+        if history_text.y < display_height - y_spacing:
+            main_group.append(history_text)
+        else:
+            break
+    
+    # Bottom section - settings and buttons
+    settings_y = display_height - int(y_spacing * 2.5)
     
     # Hysteresis setting
     hysteresis_text = label.Label(
         terminalio.FONT, 
-        text=f"Hysteresis: {hysteresis:.1f} cm", 
-        scale=1
+        text=f"Hysteresis: {hysteresis:.1f}cm", 
+        scale=info_scale
     )
-    hysteresis_text.x = 20
-    hysteresis_text.y = 190
+    hysteresis_text.x = x_margin
+    hysteresis_text.y = settings_y
     main_group.append(hysteresis_text)
-    
-    # Button labels
-    button_labels = [
-        label.Label(terminalio.FONT, text="D0: Hyst-", scale=1),
-        label.Label(terminalio.FONT, text="D1: Hyst+", scale=1),
-        label.Label(terminalio.FONT, text="D2: Report", scale=1)
-    ]
-    
-    y_pos = 210
-    for i, btn_label in enumerate(button_labels):
-        btn_label.x = 20 + (i * 100)
-        btn_label.y = y_pos
-        main_group.append(btn_label)
     
     # Countdown timer if provided
     if countdown is not None:
         countdown_text = label.Label(
             terminalio.FONT, 
             text=f"Sleep in: {countdown}s", 
-            scale=1
+            scale=info_scale
         )
-        countdown_text.x = 230
-        countdown_text.y = 190
+        # Position on right side
+        countdown_width = len(countdown_text.text) * 6 * info_scale
+        countdown_text.x = display_width - countdown_width - x_margin
+        countdown_text.y = settings_y
         main_group.append(countdown_text)
+    
+    # Button labels
+    buttons_y = display_height - int(y_spacing * 1.0)
+    
+    # Calculate button label positions
+    button_width = int((display_width - (2 * x_margin)) / 3)
+    
+    button_labels = [
+        label.Label(terminalio.FONT, text="D0: Hyst-", scale=info_scale),
+        label.Label(terminalio.FONT, text="D1: Hyst+", scale=info_scale),
+        label.Label(terminalio.FONT, text="D2: Report", scale=info_scale)
+    ]
+    
+    for i, btn_label in enumerate(button_labels):
+        btn_label.x = x_margin + (i * button_width)
+        btn_label.y = buttons_y
+        main_group.append(btn_label)
 
-# Function to connect to WiFi
+# Function to connect to WiFi with robust error handling
 def connect_wifi():
-    print("Connecting to WiFi...")
-    wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
-    print(f"Connected to {WIFI_SSID}!")
-    print(f"IP Address: {wifi.radio.ipv4_address}")
+    try:
+        print("Connecting to WiFi...")
+        # Check if we have credentials
+        if not WIFI_SSID or not WIFI_PASSWORD:
+            print("ERROR: WiFi credentials missing in settings.toml")
+            return False
+            
+        # Try to connect with timeout
+        try:
+            wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD, timeout=10)
+            print(f"Connected to {WIFI_SSID}!")
+            print(f"IP Address: {wifi.radio.ipv4_address}")
+            return True
+        except (ValueError, RuntimeError) as e:
+            print(f"WiFi connection error: {e}")
+            return False
+    except Exception as e:
+        print(f"Unexpected WiFi error: {e}")
+        return False
 
-# Function to send data to Adafruit IO
+# Function to send data to Adafruit IO with robust error handling
 def send_to_adafruit_io(distance):
-    # Create session and make request
-    pool = socketpool.SocketPool(wifi.radio)
-    requests = adafruit_requests.Session(pool, ssl.create_default_context())
-    
-    # Construct URL and headers
-    url = f"{ADAFRUIT_IO_URL}feeds/{FEED_NAME}/data"
-    headers = {
-        "X-AIO-Key": ADAFRUIT_KEY,
-        "Content-Type": "application/json"
-    }
-    
-    # Create data payload
-    data = {"value": distance}
-    
-    # Send the data
-    print(f"Posting distance: {distance}cm to Adafruit IO...")
-    response = requests.post(url, headers=headers, json=data)
-    print(f"Response: {response.status_code}")
-    response.close()
+    try:
+        # Check if we have required credentials
+        if not ADAFRUIT_USERNAME or not ADAFRUIT_KEY:
+            print("ERROR: Adafruit IO credentials missing in settings.toml")
+            return False
+            
+        # Create session and make request
+        pool = socketpool.SocketPool(wifi.radio)
+        requests = adafruit_requests.Session(pool, ssl.create_default_context())
+        
+        # Construct URL and headers
+        url = f"{ADAFRUIT_IO_URL}feeds/{FEED_NAME}/data"
+        headers = {
+            "X-AIO-Key": ADAFRUIT_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        # Create data payload
+        data = {"value": distance}
+        
+        # Send the data with timeout handling
+        print(f"Posting distance: {distance}cm to Adafruit IO...")
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=15)
+            print(f"Response: {response.status_code}")
+            response.close()
+            return response.status_code == 200
+        except Exception as e:
+            print(f"Failed to post to Adafruit IO: {e}")
+            return False
+    except Exception as e:
+        print(f"Unexpected error sending data: {e}")
+        return False
 
 # Initialize the I2C bus
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -202,17 +286,39 @@ display, main_group, backlight = setup_display()
 # Initialize buttons
 buttons = setup_buttons()
 
-# Function to read the current distance
+# Read distance with error handling
 def read_distance():
-    # Measure distance multiple times and average for reliability
-    total_distance = 0
-    samples = 5
-    
-    for _ in range(samples):
-        total_distance += sensor.range / 10  # Convert from mm to cm
-        time.sleep(0.1)
-    
-    return total_distance / samples
+    try:
+        # Measure distance multiple times and average for reliability
+        total_distance = 0
+        valid_readings = 0
+        samples = 5
+        
+        for _ in range(samples):
+            try:
+                # Get distance and convert from mm to cm
+                reading = sensor.range / 10  
+                
+                # Check for valid readings (some sensors might return 0 or very large values on error)
+                if 0 < reading < 8000:  # Reasonable range check for VL53L0X/VL53L1X (0-8m)
+                    total_distance += reading
+                    valid_readings += 1
+                else:
+                    print(f"Ignored invalid reading: {reading}cm")
+            except Exception as e:
+                print(f"Error reading sensor: {e}")
+            
+            time.sleep(0.1)
+        
+        # Check if we got any valid readings
+        if valid_readings > 0:
+            return total_distance / valid_readings
+        else:
+            print("WARNING: No valid distance readings obtained")
+            return -1  # Return negative value to indicate error
+    except Exception as e:
+        print(f"Unexpected error in read_distance: {e}")
+        return -1
 
 # Check if waking from deep sleep
 wake_reason = None
@@ -361,6 +467,7 @@ def main():
         pin_alarms.append(pin_alarm)
     
     # Clear the display and turn off backlight before sleep to save power
+    # Use root_group assignment instead of show()
     display.root_group = displayio.Group()
     if backlight:
         backlight.value = False
@@ -368,18 +475,56 @@ def main():
     # Go to deep sleep, wake on any of the alarms
     alarm.exit_and_deep_sleep_until_alarms(time_alarm, *pin_alarms)
 
-# Run the main program
+# Run the main program with robust error handling
 try:
     main()
 except Exception as e:
-    print(f"Error occurred: {e}")
+    print(f"Critical error occurred: {e}")
     # Display error on screen
-    error_group = displayio.Group()
-    error_text = label.Label(terminalio.FONT, text=f"ERROR: {str(e)}", scale=1)
-    error_text.x = 10
-    error_text.y = 120
-    error_group.append(error_text)
-    display.root_group = error_group
-    time.sleep(10)  # Show error for 10 seconds
+    try:
+        error_group = displayio.Group()
+        error_text1 = label.Label(terminalio.FONT, text="ERROR:", scale=2, color=0xFF0000)
+        error_text1.x = 10
+        error_text1.y = 40
+        error_group.append(error_text1)
+        
+        # Split error message into multiple lines if needed
+        error_msg = str(e)
+        max_chars_per_line = 30  # Approximate max chars per line
+        
+        if len(error_msg) > max_chars_per_line:
+            # Split long messages into multiple lines
+            line1 = error_msg[:max_chars_per_line]
+            line2 = error_msg[max_chars_per_line:]
+            
+            error_text2 = label.Label(terminalio.FONT, text=line1, scale=1)
+            error_text2.x = 10
+            error_text2.y = 80
+            error_group.append(error_text2)
+            
+            error_text3 = label.Label(terminalio.FONT, text=line2, scale=1)
+            error_text3.x = 10
+            error_text3.y = 100
+            error_group.append(error_text3)
+        else:
+            # Short message fits on one line
+            error_text2 = label.Label(terminalio.FONT, text=error_msg, scale=1)
+            error_text2.x = 10
+            error_text2.y = 80
+            error_group.append(error_text2)
+        
+        # Add instructions
+        restart_text = label.Label(terminalio.FONT, text="Restarting in 10 seconds...", scale=1)
+        restart_text.x = 10
+        restart_text.y = 140
+        error_group.append(restart_text)
+        
+        # Show error on display
+        board.DISPLAY.root_group = error_group
+        time.sleep(10)  # Show error for 10 seconds
+    except Exception as display_error:
+        print(f"Error showing error screen: {display_error}")
+        time.sleep(10)  # Delay anyway
+    
     # Reset the microcontroller on error
     microcontroller.reset()
