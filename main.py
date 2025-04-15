@@ -32,7 +32,12 @@ ADAFRUIT_KEY = os.getenv("ADAFRUIT_AIO_KEY", "")
 if not ADAFRUIT_KEY:
     print("WARNING: ADAFRUIT_AIO_KEY not set in settings.toml")
 
-FEED_NAME = os.getenv("ADAFRUIT_AIO_FEED_NAME", "distance-sensor")
+# Oil Tank Feed
+FEED_NAME = os.getenv("ADAFRUIT_AIO_FEED_NAME", "oil-tank-depth")
+
+# Error feed name for posting sensor errors
+ERROR_FEED_NAME = os.getenv("ADAFRUIT_AIO_ERROR_FEED_NAME", "error")
+
 
 # Time settings with defaults
 REPORT_INTERVAL = int(os.getenv("DISTANCE_MONITOR_REPORT_INTERVAL", "10800"))  # 3 hours in seconds (default)
@@ -324,8 +329,11 @@ def connect_wifi():
         print(f"Unexpected WiFi error: {e}")
         return False
 
-# Function to send data to Adafruit IO with robust error handling
-def send_to_ADAFRUIT_AIO(distance):
+# Function to send data to Adafruit IO with specified feed
+def send_to_adafruit_io(value, feed_name=None):
+    if feed_name is None:
+        feed_name = FEED_NAME
+        
     try:
         # Check if we have required credentials
         if not ADAFRUIT_USERNAME or not ADAFRUIT_KEY:
@@ -337,43 +345,48 @@ def send_to_ADAFRUIT_AIO(distance):
         requests = adafruit_requests.Session(pool, ssl.create_default_context())
         
         # Construct URL and headers
-        url = f"{ADAFRUIT_AIO_URL}{ADAFRUIT_USERNAME}/feeds/{FEED_NAME}/data"
+        url = f"{ADAFRUIT_AIO_URL}{ADAFRUIT_USERNAME}/feeds/{feed_name}/data"
         headers = {
             "X-AIO-Key": ADAFRUIT_KEY,
             "Content-Type": "application/json"
         }
         
         # Create data payload
-        data = {"value": distance}
+        data = {"value": value}
         
         # Send the data with timeout handling
-        print(f"Posting distance: {distance}cm to Adafruit IO...")
+        print(f"Posting to feed '{feed_name}': {value}")
         print(f"URL: {url}")
         try:
             response = requests.post(url, headers=headers, json=data, timeout=15)
             print(f"Response: {response.status_code}")
+            response_text = response.text
             response.close()
+            
             if response.status_code == 404:
-                print(f"Feed not found! Attempting to create feed ({FEED_NAME}) and retry...")
+                print(f"Feed not found! Attempting to create feed ({feed_name}) and retry...")
                 # Attempt to create the feed
                 create_feed_url = f"{ADAFRUIT_AIO_URL}{ADAFRUIT_USERNAME}/feeds"
                 create_feed_data = {
-                    "name": FEED_NAME,
-                    "key": FEED_NAME,
-                    "description": "Distance sensor feed",
+                    "name": feed_name,
+                    "key": feed_name,
+                    "description": f"Auto-created {feed_name} feed",
                     "visibility": "public"
                 }
                 create_response = requests.post(create_feed_url, headers=headers, json=create_feed_data, timeout=15)
-                print(f"Response to create feed: {create_response.status_code}: {create_response.content}")
+                print(f"Response to create feed: {create_response.status_code}")
                 create_response.close()
+                
                 if create_response.status_code == 201:
                     print("Feed created successfully! Retrying data post...")
                     response = requests.post(url, headers=headers, json=data, timeout=15)
                     print(f"Retry response: {response.status_code}")
                     response.close()
+                    return response.status_code == 200
                 else:
                     print(f"Failed to create feed")
                     return False
+            
             return response.status_code == 200
         except Exception as e:
             print(f"Failed to post to Adafruit IO: {e}")
@@ -382,29 +395,37 @@ def send_to_ADAFRUIT_AIO(distance):
         print(f"Unexpected error sending data: {e}")
         return False
 
+
 # Initialize the I2C bus
 i2c = busio.I2C(board.SCL, board.SDA)
 
-sensor = None
-sensor_out_of_range = 400  # Default out of range value for VL53L0X
-try:
-    # Initialize the VL53L0X sensor
-    sensor = adafruit_vl53l0x.VL53L0X(i2c)
 
-    # For better accuracy, you can set timing budget
+sensor = None
+sensor_type = None
+sensor_out_of_range = 400  # Default out of range value for VL53L0X
+
+try:
+    # Try VL53L0X first
+    import adafruit_vl53l0x
+    sensor = adafruit_vl53l0x.VL53L0X(i2c)
     sensor.measurement_timing_budget = 200000  # 200ms
+    sensor_type = "VL53L0X"
+    print("VL53L0X sensor initialized")
 except Exception as e:
-    pass
-if sensor is None:
-    print("ERROR: VL53L0X sensor not found!")
-    # Try to use VL53L1X if available
+    print(f"VL53L0X init failed: {e}")
     try:
+        # Try VL53L1X if VL53L0X fails
         import adafruit_vl53l1x
         sensor = adafruit_vl53l1x.VL53L1X(i2c)
-        sensor.measurement_timing_budget = 200000  # 200ms
-        sensor_out_of_range = 800  # Default out of range value for VL53L1X
+        # VL53L1X uses different configuration methods
+        sensor.distance_mode = 2  # Long range mode
+        sensor.timing_budget = 200  # 200ms
+        sensor_type = "VL53L1X"
+        sensor_out_of_range = 800  # Higher range for VL53L1X
+        print("VL53L1X sensor initialized")
     except Exception as e:
-        print(f"Unexpected error initializing sensor: {e}")
+        print(f"VL53L1X init failed: {e}")
+        print("No supported distance sensor found!")
         raise
 
 # Global variables to track time and last readings
@@ -418,39 +439,125 @@ display, main_group, backlight = setup_display()
 
 # Initialize buttons
 buttons = setup_buttons()
-
-# Read distance with error handling
+# Read distance with improved error handling and modal sampling
 def read_distance():
     try:
-        # Measure distance multiple times and average for reliability
-        total_distance = 0
-        valid_readings = 0
-        samples = 5
+        # Measure distance multiple times and use modal value for reliability
+        readings = []
+        valid_readings = []
+        samples = 10  # Take more samples for better modal analysis
         
         for _ in range(samples):
             try:
-                # Get distance and convert from mm to cm
-                reading = sensor.range / 10  
-                
-                # Check for valid readings (some sensors might return 0 or very large values on error)
-                if 0 < reading < sensor_out_of_range:  # Reasonable range check for VL53L0X/VL53L1X (0-8m)
-                    total_distance += reading
-                    valid_readings += 1
+                # Read sensor based on type with appropriate error checks
+                if sensor_type == "VL53L0X":
+                    # VL53L0X reports in mm, convert to cm
+                    raw_range = sensor.range
+                    
+                    # Check if out of range or error
+                    if raw_range >= sensor_out_of_range * 10:  # Check in mm
+                        print(f"VL53L0X out of range: {raw_range/10:.1f}cm")
+                        continue
+                    
+                    # Convert to cm
+                    reading = raw_range / 10
+                    
+                elif sensor_type == "VL53L1X":
+                    # Start measurement if needed (VL53L1X needs explicit start)
+                    if not sensor.data_ready:
+                        sensor.start_ranging()
+                        # Wait for data to be ready
+                        for _ in range(10):  # Try up to 10 times
+                            time.sleep(0.01)
+                            if sensor.data_ready:
+                                break
+                    
+                    # Check if data is ready
+                    if not sensor.data_ready:
+                        print("VL53L1X data not ready")
+                        continue
+                    
+                    # Get distance (already in mm)
+                    raw_range = sensor.distance
+                    
+                    # Check range status
+                    if sensor.status != 0:
+                        print(f"VL53L1X status error: {sensor.status}")
+                        continue
+                        
+                    # Check if out of range
+                    if raw_range >= sensor_out_of_range * 10:  # Check in mm
+                        print(f"VL53L1X out of range: {raw_range/10:.1f}cm")
+                        continue
+                        
+                    # Convert to cm
+                    reading = raw_range / 10
+                    
+                    # Clear ranging to prepare for next sample
+                    sensor.clear_interrupt()
+                    
                 else:
-                    print(f"Ignored invalid reading: {reading}cm")
+                    print("Unknown sensor type")
+                    return -1
+                
+                # Add to all readings
+                readings.append(reading)
+                
+                # Check for valid readings (reasonable range for oil tanks)
+                if reading is not None and 5 < int(reading) < sensor_out_of_range:  # Between 5cm and out_of_range
+                    valid_readings.append(reading)
+                else:
+                    print(f"Ignored questionable reading: {reading:.1f}cm")
+                    
             except Exception as e:
                 print(f"Error reading sensor: {e}")
             
             time.sleep(0.1)
         
-        # Check if we got any valid readings
-        if valid_readings > 0:
-            return total_distance / valid_readings
+        # If we have valid readings, find the middle element
+        avg_reading = -1  # Default to -1 if no valid readings
+        if valid_readings:
+            # Round readings to 1 decimal place for finding mode
+            rounded_readings = [round(r, 1) for r in valid_readings]
+            
+            #return middle value
+            sorted_readings = sorted(rounded_readings)
+            mid_index = len(sorted_readings) // 2
+            avg_reading = sorted_readings[mid_index]
+
+            print(f"Valid reading: {avg_reading:.1f}cm")
+
+            return avg_reading
+        
+        # If no valid readings but we have some readings, average them as fallback
+        elif readings:
+            avg_reading = sum(readings) / len(readings)
+            print(f"WARNING: Using average of questionable readings: {avg_reading:.1f}cm")
+            
+            # Report error to error feed
+            if wifi.radio.connected:
+                error_msg = f"Using avg of {len(readings)} questionable readings: {avg_reading:.1f}cm"
+                if not send_to_adafruit_io(error_msg, ERROR_FEED_NAME):
+                    print(f"Failed to report error: {error_msg}")
+                
+            return avg_reading
+        
         else:
-            print("WARNING: No valid distance readings obtained")
-            return -1  # Return negative value to indicate error
+            print("ERROR: No distance readings obtained")
+            
+            # Report error to error feed
+            if wifi.radio.connected:
+                send_to_adafruit_io("No distance readings obtained", ERROR_FEED_NAME)
+                
+            return -1
+            
     except Exception as e:
         print(f"Unexpected error in read_distance: {e}")
+        
+        # Report error to error feed
+        if wifi.radio.connected:
+            send_to_adafruit_io(f"Sensor error: {str(e)}", ERROR_FEED_NAME)
+            
         return -1
 
 # Check if waking from deep sleep
@@ -536,7 +643,7 @@ def main():
         
         if wifi_connected:
             # Report to Adafruit IO
-            report_success = send_to_ADAFRUIT_AIO(current_distance)
+            report_success = send_to_adafruit_io(current_distance)
             
             if report_success:
                 # Update last reported values only on successful report
@@ -599,7 +706,7 @@ def main():
                         
                         # Report to Adafruit IO if WiFi connected
                         if wifi_connected:
-                            report_success = send_to_ADAFRUIT_AIO(current_distance)
+                            report_success = send_to_adafruit_io(current_distance)
                             if report_success:
                                 last_report_time = time.monotonic()
                                 print("Manual report successful")
@@ -702,6 +809,10 @@ try:
     main()
 except Exception as e:
     print(f"Critical error occurred: {e}")
+    print("*** Traceback:")
+    import traceback
+    traceback.print_exc()
+    time.sleep(3)
     # Display error on screen
     try:
         error_group = displayio.Group()
