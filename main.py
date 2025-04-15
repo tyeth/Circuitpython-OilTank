@@ -648,7 +648,7 @@ def main():
     # Set up alarms with error handling
     try:
         # Set up time alarm
-        time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + 15)# + time_until_next_check)
+        time_alarm = alarm.time.TimeAlarm(monotonic_time=time.monotonic() + time_until_next_check)
         
         # Set up pin alarms for D0, D1, and D2
         pin_alarms = []  # Start with time alarm
@@ -672,7 +672,7 @@ def main():
                 
                 try:
                     print(f"Setting up alarm for {button}")
-                    pin_alarm = alarm.pin.PinAlarm(pin=button['pin'], value=not alarm_value)
+                    pin_alarm = alarm.pin.PinAlarm(pin=button['pin'], value=not button['active_low'], pull=True)
                     pin_alarms.append(pin_alarm)
                     print(f"Alarm set for pin {button_pin}")
                 except Exception as e:
