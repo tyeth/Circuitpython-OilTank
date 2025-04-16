@@ -2,6 +2,7 @@
 # For CircuitPython 9 on ESP32-S2 Reverse TFT Feather with VL53L0X/VL53L1X sensor
 
 import time
+import traceback
 import board
 import busio
 import digitalio
@@ -437,7 +438,7 @@ except Exception as e:
         sensor = adafruit_vl53l1x.VL53L1X(i2c)
         # VL53L1X uses different configuration methods
         sensor.distance_mode = 2  # Long range mode
-        sensor.timing_budget = 200  # 200ms
+        sensor.timing_budget = 200  # 400ms
         sensor_type = "VL53L1X"
         sensor_out_of_range = 800  # Higher range for VL53L1X
         print("VL53L1X sensor initialized")
@@ -473,7 +474,7 @@ try:
         raise
 except Exception as e:
     print(f"Battery sensor initialization failed: {e}")
-    traceback.print_exc()
+    traceback.print_exception(e)
     battery_sensor = None
 
 
@@ -526,21 +527,18 @@ def read_distance():
                         print("VL53L1X data not ready")
                         continue
                     
-                    # Get distance (already in mm)
+                    # Get distance (already in cm)
                     raw_range = sensor.distance
                     
-                    # Check range status
-                    if sensor.status != 0:
-                        print(f"VL53L1X status error: {sensor.status}")
-                        continue
+                    # # Check range status
+                    # if sensor.status != 0:
+                    #     print(f"VL53L1X status error: {sensor.status}")
+                    #     continue
                         
                     # Check if out of range
                     if raw_range >= sensor_out_of_range * 10:  # Check in mm
                         print(f"VL53L1X out of range: {raw_range/10:.1f}cm")
                         continue
-                        
-                    # Convert to cm
-                    reading = raw_range / 10
                     
                     # Clear ranging to prepare for next sample
                     sensor.clear_interrupt()
@@ -560,6 +558,8 @@ def read_distance():
                     
             except Exception as e:
                 print(f"Error reading sensor: {e}")
+                traceback.print_exception(e)
+
             
             time.sleep(0.1)
         
@@ -874,8 +874,7 @@ try:
 except Exception as e:
     print(f"Critical error occurred: {e}")
     print("*** Traceback:")
-    import traceback
-    traceback.print_exc()
+    traceback.print_exception(e)
     time.sleep(3)
     # Display error on screen
     try:
