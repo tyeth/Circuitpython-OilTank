@@ -8,6 +8,7 @@ import digitalio
 import displayio
 import terminalio
 import adafruit_vl53l0x
+import adafruit_max1704x
 import supervisor
 import wifi
 import socketpool
@@ -231,6 +232,17 @@ def setup_display_interface(main_group, current_distance, past_readings, hystere
     main_group.append(hysteresis_text)
     ui_elements.hysteresis_label = hysteresis_text
     
+    # Battery voltage
+    battery_text = label.Label(
+        terminalio.FONT, 
+        text="Battery: --.-V", 
+        scale=info_scale
+    )
+    battery_text.x = right_x_margin
+    battery_text.y = int((hysteresis_y + settings_y) / 2)
+    main_group.append(battery_text)
+    ui_elements.battery_label = battery_text
+
     # Countdown timer - we'll update this later
     countdown_text = label.Label(
         terminalio.FONT, 
@@ -284,6 +296,12 @@ def update_hysteresis(ui_elements, hysteresis):
 def update_countdown(ui_elements, seconds_remaining):
     if ui_elements.countdown_label:
         ui_elements.countdown_label.text = f"Sleep in: {seconds_remaining}s"
+
+# Function to update only the battery level
+def update_battery_label(ui_elements):
+    if ui_elements.battery_label:
+        ui_elements.battery_label.text = f"Battery: {battery_level:.2f}V"
+
 
 # Function to connect to WiFi with robust error handling
 def connect_wifi():
@@ -427,6 +445,37 @@ except Exception as e:
         print(f"VL53L1X init failed: {e}")
         print("No supported distance sensor found!")
         raise
+
+battery_sensor = None
+battery_level = 0.0
+try:
+    try:
+        # Try to initialize the battery sensor (MAX1704x)
+        battery_sensor = adafruit_max1704x.MAX17048(i2c)
+        print("Battery sensor initialized")
+        battery_sensor.reset_voltage = 2.7  # Set reset voltage to 2.7V (default 3.0V)
+
+        # The analog comparator is used to detect the rest voltage, if you don't think the battery
+        # will ever be removed this can reduce current usage (see datasheet on VRESET.Dis)
+        print("MAX17048 Analog comparator is ", end="")
+        if battery_sensor.comparator_disabled:
+            print("disabled")
+        else:
+            print("enabled, attempting to disable")
+            battery_sensor.comparator_disabled = True
+            print("Analog comparator disabled: ", battery_sensor.comparator_disabled)
+        time.sleep(0.1)
+        battery_level = battery_sensor.cell_voltage
+        print(f"Battery voltage: {battery_level:.2f}V")
+        battery_sensor.hibernate()
+    except Exception as e:
+        print(f"Battery sensor init failed: {e}")
+        raise
+except Exception as e:
+    print(f"Battery sensor initialization failed: {e}")
+    traceback.print_exc()
+    battery_sensor = None
+
 
 # Global variables to track time and last readings
 last_report_time = 0
@@ -636,7 +685,6 @@ def main():
     # Report data if needed
     report_success = False
     if should_report:
-        # TODO: fetch fresh reading
 
         # Connect to WiFi with error handling
         wifi_connected = connect_wifi()
@@ -648,6 +696,22 @@ def main():
             if report_success:
                 # Update last reported values only on successful report
                 last_report_time = current_time
+            
+            # TODO: fetch fresh reading? for now just get battery
+            if battery_sensor:
+                try:
+                    if battery_sensor.hibernating:
+                        print("Waking up battery sensor")
+                        battery_sensor.wake()
+                    time.sleep(0.1)
+                    battery_level = battery_sensor.cell_voltage
+                    print(f"Battery voltage: {battery_level:.2f}V")
+                    battery_sensor.hibernate()  # Hibernate after reading
+                    print(f"Reported battery success: {(send_to_adafruit_io(battery_level, FEED_NAME + "-bat"))}")
+                    # Update battery label on display
+                    update_battery_label(ui_elements)
+                except Exception as e:
+                    print(f"Error reading+posting battery voltage: {e}")
             
             # Disconnect WiFi to save power
             wifi.radio.enabled = False
